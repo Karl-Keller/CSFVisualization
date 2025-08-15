@@ -1,0 +1,91 @@
+graph TD
+    A[Input LiDAR Point Cloud] --> B[Data Preprocessing]
+    B --> C[Calculate Bounding Box]
+    C --> D[Initialize Cloth Grid]
+    
+    D --> E[Set Initial Cloth Height]
+    E --> F[Create Cloth Particles]
+    F --> G[Define Cloth Constraints]
+    
+    G --> H[Physics Simulation Loop]
+    H --> I[Apply Gravity Forces]
+    I --> J[Update Particle Positions]
+    J --> K[Collision Detection]
+    
+    K --> L{Collision with Points?}
+    L -->|Yes| M[Adjust Cloth Position]
+    L -->|No| N[Continue Movement]
+    
+    M --> O[Update Constraints]
+    N --> O
+    O --> P{Converged?}
+    P -->|No| I
+    P -->|Yes| Q[Final Cloth Surface]
+    
+    Q --> R[Calculate Point-to-Cloth Distances]
+    R --> S[Apply Classification Threshold]
+    S --> T{Distance < Threshold?}
+    T -->|Yes| U[Classify as Ground]
+    T -->|No| V[Classify as Non-Ground]
+    
+    U --> W[Output Ground Points]
+    V --> X[Output Non-Ground Points]
+    
+    W --> Y[Validation & Quality Check]
+    X --> Y
+    Y --> Z[Final Classification Results]
+    
+    subgraph "Animation Scenes"
+        A1[Title Sequence]
+        A2[Problem Introduction]
+        A3[Algorithm Overview]
+        A4[Cloth Initialization Demo]
+        A5[Physics Simulation Visual]
+        A6[Classification Demo]
+        A7[PDAL Pipeline Example]
+        A8[Parameter Tuning Guide]
+        A9[Conclusion]
+    end
+    
+    subgraph "PDAL Integration"
+        P1[readers.las]
+        P2[filters.csf]
+        P3[writers.las]
+        P1 --> P2
+        P2 --> P3
+    end
+    
+    subgraph "Manim Components"
+        M1[Scene Setup]
+        M2[3D Point Visualization]
+        M3[Cloth Physics Animation]
+        M4[Classification Colors]
+        M5[Parameter Sliders]
+        M6[Text Explanations]
+    end
+    
+    subgraph "CSF Parameters"
+        C1[cloth_resolution: 0.1-2.0m]
+        C2[class_threshold: 0.1-1.0m]
+        C3[rigidness: 1-3]
+        C4[iterations: 100-1000]
+        C5[time_step: 0.1-1.0]
+    end
+    
+    Z --> A1
+    A1 --> A2
+    A2 --> A3
+    A3 --> A4
+    A4 --> A5
+    A5 --> A6
+    A6 --> A7
+    A7 --> A8
+    A8 --> A9
+    
+    style A fill:#e1f5fe
+    style H fill:#fff3e0
+    style Q fill:#f3e5f5
+    style Z fill:#e8f5e8
+    style A1 fill:#fce4ec
+    style P2 fill:#e3f2fd
+    style M3 fill:#fff8e1
