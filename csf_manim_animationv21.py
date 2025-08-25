@@ -19,6 +19,50 @@ import os
 from pathlib import Path
 from typing import List, Tuple, Dict, Optional
 
+class SceneObjectManager:
+    """Manages scene objects for proper cleanup"""
+    def __init__(self, scene):
+        self.scene = scene
+        self.tracked_objects = {}
+        self.object_groups = {}
+    
+    def add_object(self, name, obj, group="default"):
+        """Add object to tracking"""
+        self.tracked_objects[name] = obj
+        if group not in self.object_groups:
+            self.object_groups[group] = []
+        self.object_groups[group].append(name)
+        return obj
+    
+    def remove_object(self, name):
+        """Remove specific object"""
+        if name in self.tracked_objects:
+            obj = self.tracked_objects[name]
+            if obj in self.scene.mobjects:
+                self.scene.remove(obj)
+            del self.tracked_objects[name]
+    
+    def cleanup_group(self, group="default"):
+        """Clean up entire group"""
+        if group in self.object_groups:
+            objects_to_remove = []
+            for name in self.object_groups[group]:
+                if name in self.tracked_objects:
+                    objects_to_remove.append(self.tracked_objects[name])
+                    del self.tracked_objects[name]
+            
+            if objects_to_remove:
+                self.scene.play(FadeOut(*objects_to_remove))
+            self.object_groups[group] = []
+    
+    def cleanup_all(self):
+        """Clean up everything"""
+        all_objects = list(self.tracked_objects.values())
+        if all_objects:
+            self.scene.play(FadeOut(*all_objects))
+        self.tracked_objects.clear()
+        self.object_groups.clear()
+
 # Define custom colors
 BROWN = "#8B4513"
 LIGHT_GRAY = "#D3D3D3"
@@ -41,6 +85,9 @@ except ImportError:
 
 class CSFAlgorithmAnimation(Scene):
     def construct(self):
+        # Initialize object manager
+        self.object_manager = SceneObjectManager(self)
+        
         # Title sequence
         self.play_title_sequence()
         
@@ -54,10 +101,7 @@ class CSFAlgorithmAnimation(Scene):
         self.cloth_initialization()
         
         # Step 4: Show physics simulation
-        #self.physics_simulation() - could be many other variants from approximations to near parallel implementations of PDAL CSF
-        #self.physics_simulation_advanced()
-        self.physics_simulation_adaptive_csf()  #- working!  but does not motivate the inner functions of cloth drop
-        #self.physics_simulation_sticky_points_visualization()
+        self.physics_simulation_high_density_sticky_csf()
         
         # Step 5: Ground point classification
         self.ground_classification()
@@ -70,6 +114,9 @@ class CSFAlgorithmAnimation(Scene):
         
         # Step 8: Conclusion
         self.conclusion()
+        
+        # Final cleanup
+        self.object_manager.cleanup_all()
 
     def play_title_sequence(self):
         """Opening title sequence"""
@@ -92,8 +139,9 @@ class CSFAlgorithmAnimation(Scene):
     def introduce_problem(self):
         """Introduce the ground filtering problem"""
         problem_title = Text("The Problem: Ground vs Non-Ground Points", 
-                           font_size=48, color=YELLOW)
+                        font_size=48, color=YELLOW)
         problem_title.to_edge(UP)
+        self.object_manager.add_object("problem_title", problem_title, "intro")
         
         # Create 3D-like point cloud visualization
         axes = Axes(
@@ -103,6 +151,7 @@ class CSFAlgorithmAnimation(Scene):
             y_length=6,
             tips=False
         )
+        self.object_manager.add_object("intro_axes", axes, "intro")
         
         # Generate synthetic LiDAR points
         ground_points, vegetation_points, building_points = self.generate_synthetic_lidar()
@@ -123,6 +172,10 @@ class CSFAlgorithmAnimation(Scene):
             for x, y, z in building_points
         ])
         
+        self.object_manager.add_object("ground_dots", ground_dots, "intro")
+        self.object_manager.add_object("vegetation_dots", vegetation_dots, "intro")
+        self.object_manager.add_object("building_dots", building_dots, "intro")
+        
         self.play(Write(problem_title))
         self.play(Create(axes))
         
@@ -140,6 +193,7 @@ class CSFAlgorithmAnimation(Scene):
         
         labels = VGroup(ground_label, vegetation_label, building_label)
         labels.arrange(RIGHT, buff=1).to_edge(DOWN)
+        self.object_manager.add_object("labels", labels, "intro")
         
         self.play(Write(labels))
         self.wait(2)
@@ -150,14 +204,15 @@ class CSFAlgorithmAnimation(Scene):
         self.building_points = building_points
         self.axes = axes
         
-        # PROPER CLEANUP - Clear everything before next scene
-        self.play(FadeOut(problem_title, labels, axes, ground_dots, vegetation_dots, building_dots))
+        # PROPER CLEANUP - Clean up intro group
+        self.object_manager.cleanup_group("intro")
         self.wait(0.5)
 
     def algorithm_overview(self):
         """Show CSF algorithm overview"""
         title = Text("CSF Algorithm Overview", font_size=48, color=BLUE)
         title.to_edge(UP)
+        self.object_manager.add_object("overview_title", title, "overview")
         
         # Algorithm steps
         steps = [
@@ -177,6 +232,8 @@ class CSFAlgorithmAnimation(Scene):
                 step_text.next_to(step_objects[-1], DOWN, buff=0.5, aligned_edge=LEFT)
             step_objects.add(step_text)
         
+        self.object_manager.add_object("step_objects", step_objects, "overview")
+        
         self.play(Write(title))
         
         for step in step_objects:
@@ -184,7 +241,9 @@ class CSFAlgorithmAnimation(Scene):
             self.wait(0.8)
         
         self.wait(2)
-        self.play(FadeOut(title, step_objects))
+        
+        # Clean up overview group
+        self.object_manager.cleanup_group("overview")
 
     def cloth_initialization(self):
         """Demonstrate cloth initialization"""
@@ -1497,162 +1556,195 @@ class CSFAlgorithmAnimation(Scene):
         self.play(FadeOut(*cleanup_objects))
         self.wait(0.5)
 
-    def physics_simulation_sticky_points_visualization(self):
-        """Fixed sticky points visualization with proper cloth display and physics"""
-        title = Text("Cloth Descent CSF Visualization", font_size=48, color=BLUE)
+    def physics_simulation_high_density_sticky_csf(self):
+        """Enhanced CSF that treats buildings as semi-ground and shows vegetation passthrough"""
+        title = Text("CSF Visualization", font_size=48, color=BLUE)
         title.to_edge(UP)
         
         self.play(Write(title))
         
-        # Analyze point cloud (debug info)
+        # Analyze point cloud with building/vegetation classification
         all_points = np.vstack([self.ground_points, self.vegetation_points, self.building_points])
         
         min_z = all_points[:, 2].min()
         max_z = all_points[:, 2].max()
         z_range = max_z - min_z
         
-        print(f"DEBUG: Point cloud Z range: {min_z:.2f} to {max_z:.2f} (range: {z_range:.2f})")
-        print(f"DEBUG: Total points: {len(all_points)}")
+        print(f"BUILDING-AWARE DEBUG: Point cloud analysis:")
+        print(f"  Ground points: {len(self.ground_points)}")
+        print(f"  Vegetation points: {len(self.vegetation_points)}")
+        print(f"  Building points: {len(self.building_points)}")
+        print(f"  Z range: {min_z:.2f} to {max_z:.2f}")
         
-        # Show point cloud
-        point_dots = VGroup(*[
-            Dot(self.axes.coords_to_point(x, z), color=WHITE, radius=0.025) 
-            for x, y, z in all_points
+        # Show point cloud with type-specific colors
+        ground_dots = VGroup(*[
+            Dot(self.axes.coords_to_point(x, z), color=BROWN, radius=0.02) 
+            for x, y, z in self.ground_points
         ])
-        self.play(FadeIn(point_dots, lag_ratio=0.02))
+        vegetation_dots = VGroup(*[
+            Dot(self.axes.coords_to_point(x, z), color=GREEN, radius=0.02) 
+            for x, y, z in self.vegetation_points
+        ])
+        building_dots = VGroup(*[
+            Dot(self.axes.coords_to_point(x, z), color=GRAY, radius=0.02) 
+            for x, y, z in self.building_points
+        ])
         
-        explanation = Text("Watch cloth battle against terrain resistance forces", 
+        self.play(FadeIn(ground_dots), FadeIn(vegetation_dots), FadeIn(building_dots))
+        
+        explanation = Text("Cloth treats buildings as semi-ground, passes through vegetation", 
                         font_size=20, color=YELLOW)
         explanation.to_edge(DOWN)
         self.play(Write(explanation))
+        self.wait(2)
         
-        # Simplified adaptive parameters for more aggressive descent
-        resolution = 0.5
-        time_step = 0.65  # Larger time step for faster movement
-        gravity = 0.12    # Stronger gravity to overcome sticky forces
-        damping = 0.85    # Match successful adaptive CSF
-        spring_strength = 0.4
+        # Parameters optimized for building-aware physics
+        resolution = 0.3
+        time_step = 0.5
+        gravity = 0.1
+        damping = 0.88
+        spring_strength = 0.5
         threshold = 0.25
         
-        print(f"DEBUG: Using parameters - resolution: {resolution}, gravity: {gravity}")
-        
-        # Create cloth grid (FIXED coordinate system)
+        # Create cloth grid
         min_x, max_x = all_points[:, 0].min(), all_points[:, 0].max()
-        min_y, max_y = all_points[:, 1].min(), all_points[:, 1].max()  # Proper Y coordinates
+        min_z, max_z = all_points[:, 1].min(), all_points[:, 1].max()
         
         padding = resolution
         min_x -= padding
         max_x += padding
-        min_y -= padding
-        max_y += padding
+        min_z -= padding
+        max_z += padding
         
         x_coords = np.arange(min_x, max_x + resolution, resolution)
-        y_coords = np.arange(min_y, max_y + resolution, resolution)  # Use Y, not Z
+        z_coords = np.arange(min_z, max_z + resolution, resolution)
         
         grid_width = len(x_coords)
-        grid_height = len(y_coords)
+        grid_height = len(z_coords)
         
-        print(f"DEBUG: Grid size: {grid_width} x {grid_height}")
-        print(f"DEBUG: X range: {min_x:.2f} to {max_x:.2f}")
-        print(f"DEBUG: Y range: {min_y:.2f} to {max_y:.2f}")
+        print(f"BUILDING-AWARE DEBUG: Grid size: {grid_width} x {grid_height}")
         
-        # Initialize cloth - start HIGH above all points
-        initial_height = max_z + 2.0
+        # Initialize cloth heights - start ABOVE all points (corrected for new coordinate system)
+        terrain_max_height = all_points[:, 2].max()  # Use actual Z coordinate from points
+        initial_height = terrain_max_height + 1.5  # Start well above highest terrain point
+        print(f"DEBUG: Terrain max height: {terrain_max_height:.2f}, cloth starts at: {initial_height:.2f}")
         cloth_heights = {}
         cloth_velocities = {}
         cloth_states = {}
+        cloth_interactions = {}  # Track all interactions (ground, building, vegetation)
         
         for i in range(grid_width):
             for j in range(grid_height):
                 cloth_heights[(i, j)] = initial_height
                 cloth_velocities[(i, j)] = 0.0
                 cloth_states[(i, j)] = 'falling'
+                cloth_interactions[(i, j)] = {'type': None, 'points': [], 'forces': []}
         
-        print(f"DEBUG: Cloth initialized at height {initial_height:.2f}")
-        print(f"DEBUG: Created {len(cloth_heights)} cloth particles")
-        
-        # Pre-compute sticky points with ground-selective logic
-        sticky_points = {}
+        # Enhanced terrain analysis with building detection
+        terrain_analysis = {}
         sticky_arrows = VGroup()
         
-        # First pass: Estimate global ground level
-        estimated_ground_level = np.percentile(all_points[:, 2], 20)  # Conservative ground estimate
-        print(f"DEBUG: Estimated ground level: {estimated_ground_level:.2f}")
+        estimated_ground_level = np.percentile(all_points[:, 2], 15)
+        print(f"BUILDING-AWARE DEBUG: Estimated ground level: {estimated_ground_level:.2f}")
         
-        for i in range(grid_width):
-            for j in range(grid_height):
-                x = x_coords[i]
-                y = y_coords[j]  # Use proper Y coordinate
-                
-                # Find nearby terrain points
-                nearby_points = all_points[
-                    (np.abs(all_points[:, 0] - x) < resolution * 1.5) &
-                    (np.abs(all_points[:, 1] - y) < resolution * 1.5)  # Fixed Y lookup
-                ]
-                
-                if len(nearby_points) > 2:  # Need multiple points for analysis
-                    point_heights = nearby_points[:, 2]
-                    height_range = point_heights.max() - point_heights.min()
-                    point_density = len(nearby_points)
-                    
-                    # Smart ground detection
-                    if height_range > 0.8:  # Significant height variation = vegetation over ground
-                        true_ground = np.percentile(point_heights, 15)  # Find actual ground
-                        vegetation_height = point_heights.max()
+        for i in range(grid_width):        
+            for j in range(grid_height):            
+                x = x_coords[i]            
+                z = z_coords[j]
+                search_radius = resolution * 1.5
+                # Separate nearby points by type
+                nearby_ground = self.ground_points[                
+                    (np.abs(self.ground_points[:, 0] - x) < search_radius) &  (np.abs(self.ground_points[:, 1] - z) < search_radius)]
+                nearby_vegetation = self.vegetation_points[
+                    (np.abs(self.vegetation_points[:, 0] - x) < search_radius) & (np.abs(self.vegetation_points[:, 1] - z) < search_radius)]
+                nearby_buildings = self.building_points[
+                    (np.abs(self.building_points[:, 0] - x) < search_radius) & (np.abs(self.building_points[:, 1] - z) < search_radius)]
+                # Determine terrain type and behavior
+                terrain_type = 'empty'
+                ground_level = estimated_ground_level
+                building_level = None
+                vegetation_level = None
+                stickiness = 0.0
+                if len(nearby_ground) > 0:
+                    ground_level = nearby_ground[:, 2].max()
+                    terrain_type = 'ground'
+                    stickiness = 0.8  
+                    # Strong stickiness for ground
+                if len(nearby_buildings) > 0:
+                    building_level = nearby_buildings[:, 2].max()
+                    building_density = len(nearby_buildings)
+                    # Buildings act as semi-ground, especially flat rooftops
+                    building_height_range = nearby_buildings[:, 2].max() - nearby_buildings[:, 2].min()
+                    if building_height_range < 0.3:  
+                        # Flat building top
+                        if terrain_type == 'ground':
+                            # Building above ground
+                            if building_level > ground_level + 1.0:
+                                terrain_type = 'building_on_ground'
+                                stickiness = 0.6   # Moderate stickiness for building tops
+                        else:
+                            terrain_type = 'building'
+                            ground_level = building_level
+                            stickiness = 0.6
                     else:
-                        true_ground = point_heights.max()  # Relatively flat = likely ground
-                        vegetation_height = true_ground
-                    
-                    # Height-based sticky strength reduction
-                    height_above_estimated_ground = vegetation_height - estimated_ground_level
-                    height_factor = max(0.1, 1.0 - (height_above_estimated_ground / 3.0))  # Reduce for high points
-                    
-                    # Density-based sticky strength
-                    search_area = (resolution * 1.5) ** 2
-                    density = point_density / search_area
-                    density_factor = min(1.0, density / 20.0)  # Stronger sticky for dense areas
-                    
-                    # Calculate ground-selective stickiness
-                    base_stickiness = min(0.6, (density_factor * 0.4 + height_range * 0.2))
-                    stickiness = base_stickiness * height_factor  # Reduce for vegetation
-                    
-                    # Only create sticky points for significant ground areas
-                    if stickiness > 0.05 and height_factor > 0.3:  # Must be reasonably close to ground
-                        sticky_points[(i, j)] = {
-                            'strength': stickiness,
-                            'height': true_ground,  # Use true ground, not vegetation top
-                            'vegetation_height': vegetation_height,
-                            'is_ground_area': height_factor > 0.7,
-                            'active': False
-                        }
-                        
-                        # Create sticky arrow at true ground level
-                        arrow_start = self.axes.coords_to_point(x, true_ground)
-                        arrow_end = self.axes.coords_to_point(x, true_ground + stickiness * 1.0)
-                        
-                        # Color code: Green for ground areas, Yellow for mixed areas
-                        arrow_color = GREEN if height_factor > 0.7 else YELLOW
-                        
-                        arrow = Arrow(
-                            arrow_start, arrow_end,
-                            color=arrow_color, stroke_width=2,
-                            max_stroke_width_to_length_ratio=8,
-                            max_tip_length_to_length_ratio=0.3
-                        )
-                        arrow.set_opacity(0)
-                        sticky_arrows.add(arrow)
+                        # Sloped building edge - less sticky, gravity can overcome
+                        if terrain_type == 'ground':
+                            terrain_type = 'building_edge_on_ground'
+                            stickiness = 0.3  # Low stickiness for edges
+                        else:
+                            terrain_type = 'building_edge'
+                            stickiness = 0.2
+                if len(nearby_vegetation) > 0:
+                    vegetation_level = nearby_vegetation[:, 2].max()
+                    if terrain_type in ['empty']:
+                        terrain_type = 'vegetation_only'
+                        stickiness = 0.0  # No stickiness for vegetation alone
+                    else:
+                        terrain_type += '_with_vegetation' # Vegetation doesn't increase stickiness
+                # Store terrain analysis\n            
+                terrain_analysis[(i, j)] = {'type': terrain_type, 
+                                            'ground_level': ground_level, 
+                                            'building_level': building_level, 
+                                            'vegetation_level': vegetation_level,
+                                            'stickiness': stickiness,
+                                            'nearby_ground': nearby_ground,
+                                            'nearby_buildings': nearby_buildings,
+                                            'nearby_vegetation': nearby_vegetation}
+                # Create sticky arrows for areas with significant stickiness
+                if stickiness > 0.1:
+                    arrow_start = self.axes.coords_to_point(x, ground_level)
+                    arrow_end = self.axes.coords_to_point(x, ground_level + stickiness * 0.8)
+                    # Color code by terrain type
+                    if 'ground' in terrain_type:
+                        arrow_color = BROWN
+                    elif 'building' in terrain_type:
+                        if 'edge' in terrain_type:
+                            arrow_color = ORANGE  # Building edges                    
+                        else:
+                            arrow_color = GRAY    # Building tops
+                else:
+                    arrow_color = GREEN
+                    arrow = Arrow(arrow_start, 
+                                  arrow_end, 
+                                  color=arrow_color, 
+                                  stroke_width=1.5, 
+                                  max_stroke_width_to_length_ratio=8, 
+                                  max_tip_length_to_length_ratio=0.3)
+                    arrow.set_opacity(0)
+                    sticky_arrows.add(arrow)
         
+        self.object_manager.add_object("sticky_arrows", sticky_arrows, "physics_helpers")
         self.add(sticky_arrows)
-        print(f"DEBUG: Created {len(sticky_points)} sticky points")
+        print(f"BUILDING-AWARE DEBUG: Created {len(terrain_analysis)} terrain analysis cells")
         
-        # FIXED visualization function
-        def visualize_sticky_cloth(heights_dict, velocities_dict, states_dict):
+        # Enhanced visualization with interaction feedback
+        def visualize_building_aware_cloth(heights_dict, velocities_dict, states_dict, interactions_dict, show_interactions=True):
             dots = VGroup()
             lines = VGroup()
+            interaction_markers = VGroup()
+            passthrough_effects = VGroup()
             
-            print(f"DEBUG: Visualizing {len(heights_dict)} cloth particles")
-            
-            particle_positions = {}  # Store for line connections
+            particle_positions = {}
             
             for i in range(grid_width):
                 for j in range(grid_height):
@@ -1660,12 +1752,12 @@ class CSFAlgorithmAnimation(Scene):
                         continue
                         
                     x = x_coords[i]
-                    y = y_coords[j]
+                    z = z_coords[j]
                     height = heights_dict[(i, j)]
-                    velocity = velocities_dict[(i, j)]
                     state = states_dict[(i, j)]
+                    interactions = interactions_dict[(i, j)]
                     
-                    # Color and size based on state
+                    # Standard cloth particle colors
                     if state == 'falling':
                         color = BLUE
                         radius = 0.02
@@ -1679,114 +1771,148 @@ class CSFAlgorithmAnimation(Scene):
                         color = GREEN
                         radius = 0.02
                     
-                    # Create dot at cloth position
-                    dot_pos = self.axes.coords_to_point(x, height)  # X and HEIGHT for 2D display
+                    dot_pos = self.axes.coords_to_point(x, height)
                     dot = Dot(dot_pos, color=color, radius=radius)
                     dots.add(dot)
-                    
                     particle_positions[(i, j)] = dot_pos
-            
+                    
+                    # Show interaction effects based on what cloth is interacting with
+                    if show_interactions and interactions['type'] is not None:
+                        interaction_type = interactions['type']
+                        
+                        # Highlight cloth particle in interaction
+                        if interaction_type in ['ground_contact', 'building_contact']:
+                            # Strong interaction (stuck/struggling)
+                            highlight = Circle(radius=0.06, color=RED, stroke_width=3)
+                            highlight.move_to(dot_pos)
+                            interaction_markers.add(highlight)
+                            # Show connection to causing points
+                            for point in interactions['points'][:3]:  
+                                # Limit to first 3 for clarity
+                                point_pos = self.axes.coords_to_point(point[0], point[2])
+                                connection = Line(dot_pos, point_pos, color=RED, stroke_width=2)
+                                interaction_markers.add(connection)
+                            # Highlight the terrain point
+                            if interaction_type == 'ground_contact':
+                                terrain_highlight = Circle(radius=0.04, color=BROWN, stroke_width=2)
+                            else:  # building_contact
+                                terrain_highlight = Circle(radius=0.04, color=GRAY, stroke_width=2)
+                                terrain_highlight.move_to(point_pos)
+                                interaction_markers.add(terrain_highlight)
+                        elif interaction_type == 'vegetation_passthrough':
+                            # Gentle interaction (passing through)
+                            if show_interactions:
+                                passthrough_circle = Circle(radius=0.04, color=GREEN, stroke_width=1, stroke_opacity=0.6)
+                                passthrough_circle.move_to(dot_pos)
+                                passthrough_effects.add(passthrough_circle)
+                                # Show vegetation being passed through
+                                for point in interactions['points'][:2]:
+                                    # Show fewer for vegetation
+                                    point_pos = self.axes.coords_to_point(point[0], point[2])
+                                    passthrough_line = DashedLine(dot_pos, 
+                                                                point_pos,
+                                                                color=GREEN, 
+                                                                stroke_width=1, 
+                                                                stroke_opacity=0.5,
+                                                                dash_length=0.1)
+                                    passthrough_effects.add(passthrough_line)
+                        elif interaction_type == 'building_edge_override':
+                            # Gravity overcoming building edge
+                            override_marker = RegularPolygon(n=4, radius=0.03, color=YELLOW, fill_opacity=0.8)
+                            override_marker.move_to(dot_pos)
+                            interaction_markers.add(override_marker)        
             # Create grid lines
-            for i in range(grid_width):
-                for j in range(grid_height):
+            for i in range(0, grid_width, 2):  # Every other line to reduce clutter
+                for j in range(0, grid_height, 2):
                     if (i, j) not in particle_positions:
                         continue
                         
                     current_pos = particle_positions[(i, j)]
                     state = states_dict[(i, j)]
                     
-                    # Use same color as particle
-                    if state == 'falling':
-                        color = BLUE
-                    elif state == 'struggling':
-                        color = YELLOW
-                    elif state == 'stuck':
-                        color = RED
-                    else:
-                        color = GREEN
+                    color = BLUE if state == 'falling' else YELLOW if state == 'struggling' else RED if state == 'stuck' else GREEN
                     
-                    # Connect to right neighbor
-                    if i < grid_width - 1 and (i+1, j) in particle_positions:
-                        right_pos = particle_positions[(i+1, j)]
+                    if i < grid_width - 2 and (i+2, j) in particle_positions:
+                        right_pos = particle_positions[(i+2, j)]
                         line = Line(current_pos, right_pos, 
-                                color=color, stroke_width=1.5, stroke_opacity=0.8)
+                                color=color, stroke_width=1, stroke_opacity=0.7)
                         lines.add(line)
                     
-                    # Connect to down neighbor
-                    if j < grid_height - 1 and (i, j+1) in particle_positions:
-                        down_pos = particle_positions[(i, j+1)]
+                    if j < grid_height - 2 and (i, j+2) in particle_positions:
+                        down_pos = particle_positions[(i, j+2)]
                         line = Line(current_pos, down_pos, 
-                                color=color, stroke_width=1.5, stroke_opacity=0.8)
+                                color=color, stroke_width=1, stroke_opacity=0.7)
                         lines.add(line)
             
-            print(f"DEBUG: Created {len(dots)} dots and {len(lines)} lines")
-            return dots, lines
+            return dots, lines, interaction_markers, passthrough_effects
         
         # Show initial cloth
-        cloth_dots, cloth_lines = visualize_sticky_cloth(cloth_heights, cloth_velocities, cloth_states)
+        cloth_dots, cloth_lines, interaction_markers, passthrough_effects = visualize_building_aware_cloth(
+            cloth_heights, cloth_velocities, cloth_states, cloth_interactions
+        )
         self.play(FadeIn(cloth_dots), Create(cloth_lines))
         
-        # Add legend with updated colors
+        # Enhanced legend
         legend = VGroup(
-            Text("Cloth States:", font_size=14, color=WHITE),
-            VGroup(Dot(color=BLUE, radius=0.02), Text("Falling", font_size=12, color=BLUE)).arrange(RIGHT, buff=0.1),
-            VGroup(Dot(color=YELLOW, radius=0.02), Text("Struggling", font_size=12, color=YELLOW)).arrange(RIGHT, buff=0.1),
-            VGroup(Dot(color=RED, radius=0.02), Text("Stuck", font_size=12, color=RED)).arrange(RIGHT, buff=0.1),
-            VGroup(Dot(color=GREEN, radius=0.02), Text("Settled", font_size=12, color=GREEN)).arrange(RIGHT, buff=0.1),
-            Text("Sticky Forces:", font_size=14, color=WHITE),
-            VGroup(Arrow(ORIGIN, UP*0.2, color=GREEN), Text("Ground Areas", font_size=12, color=GREEN)).arrange(RIGHT, buff=0.1),
-            VGroup(Arrow(ORIGIN, UP*0.2, color=YELLOW), Text("Mixed Areas", font_size=12, color=YELLOW)).arrange(RIGHT, buff=0.1)
+            Text("Building-Aware Cloth:", font_size=14, color=WHITE),
+            VGroup(Dot(color=BLUE, radius=0.02), Text("Falling", font_size=11, color=BLUE)).arrange(RIGHT, buff=0.1),
+            VGroup(Dot(color=YELLOW, radius=0.02), Text("Struggling", font_size=11, color=YELLOW)).arrange(RIGHT, buff=0.1),
+            VGroup(Dot(color=RED, radius=0.02), Text("Stuck", font_size=11, color=RED)).arrange(RIGHT, buff=0.1),
+            VGroup(Dot(color=GREEN, radius=0.02), Text("Settled", font_size=11, color=GREEN)).arrange(RIGHT, buff=0.1),
+            Text("Interactions:", font_size=14, color=WHITE),
+            VGroup(Circle(radius=0.03, color=RED), Text("Ground/Building Contact", font_size=10, color=RED)).arrange(RIGHT, buff=0.1),
+            VGroup(Circle(radius=0.02, color=GREEN), Text("Vegetation Passthrough", font_size=10, color=GREEN)).arrange(RIGHT, buff=0.1),
+            VGroup(RegularPolygon(n=4, radius=0.02, color=YELLOW, fill_opacity=0.8), Text("Gravity Override", font_size=10, color=YELLOW)).arrange(RIGHT, buff=0.1),
+            Text("Terrain Stickiness:", font_size=14, color=WHITE),
+            VGroup(Arrow(ORIGIN, UP*0.15, color=BROWN), Text("Ground", font_size=10, color=BROWN)).arrange(RIGHT, buff=0.1),
+            VGroup(Arrow(ORIGIN, UP*0.15, color=GRAY), Text("Building Top", font_size=10, color=GRAY)).arrange(RIGHT, buff=0.1),
+            VGroup(Arrow(ORIGIN, UP*0.15, color=ORANGE), Text("Building Edge", font_size=10, color=ORANGE)).arrange(RIGHT, buff=0.1)
         )
-        legend.arrange(DOWN, aligned_edge=LEFT, buff=0.2)
-        legend.to_corner(UL, buff=0.5).shift(DOWN * 1.5)
+        legend.arrange(DOWN, aligned_edge=LEFT, buff=0.1)
+        legend.to_corner(UL, buff=0.3).shift(DOWN * 1.5)
+        self.object_manager.add_object("physics_legend", legend, "physics_helpers")
         self.play(FadeIn(legend))
         
-        # Physics simulation
-        explanation_sim = Text("Physics simulation with sticky terrain resistance", 
+        # Building-aware physics simulation
+        explanation_sim = Text("Building-aware physics: buildings=semi-ground, vegetation=passthrough", 
                             font_size=20, color=GREEN)
         explanation_sim.to_edge(DOWN)
         self.play(Transform(explanation, explanation_sim))
         
-        animation_iterations = 30
+        animation_iterations = 50
         
-        progress_text = Text("Starting simulation...", font_size=16, color=GREEN)
+        progress_text = Text("Building-aware simulation...", font_size=16, color=GREEN)
         progress_text.to_corner(UR)
         self.play(Write(progress_text))
         
-        # FIXED physics simulation
+        # Enhanced physics simulation
         for anim_iter in range(animation_iterations):
-            print(f"DEBUG: Animation iteration {anim_iter + 1}/{animation_iterations}")
+            print(f"BUILDING-AWARE DEBUG: Animation iteration {anim_iter + 1}/{animation_iterations}")
             
-            # Update sticky arrows visibility with ground-selective logic
+            # Update sticky arrows based on cloth proximity
             arrow_index = 0
-            for (i, j), sticky_info in sticky_points.items():
-                if arrow_index < len(sticky_arrows):
+            for (i, j), terrain_info in terrain_analysis.items():
+                if arrow_index < len(sticky_arrows) and terrain_info['stickiness'] > 0.1:
                     arrow = sticky_arrows[arrow_index]
                     
                     if (i, j) in cloth_heights:
                         cloth_height = cloth_heights[(i, j)]
-                        distance_to_ground = cloth_height - sticky_info['height']  # Distance to TRUE ground
-                        distance_to_vegetation = cloth_height - sticky_info.get('vegetation_height', sticky_info['height'])
+                        distance_to_terrain = cloth_height - terrain_info['ground_level']
                         
-                        # Show arrow only when cloth approaches TRUE ground (not vegetation)
-                        if 0.05 < distance_to_ground < 0.8:  # Much tighter range for ground
-                            if sticky_info['is_ground_area']:
-                                target_opacity = min(0.9, sticky_info['strength'] * (1.5 / distance_to_ground))
-                            else:
-                                target_opacity = min(0.4, sticky_info['strength'] * (1.0 / distance_to_ground))
-                            sticky_info['active'] = True
+                        # Show arrow when cloth approaches terrain
+                        if 0.05 < distance_to_terrain < 1.0:
+                            opacity = min(0.8, terrain_info['stickiness'] * (1.5 / distance_to_terrain))
+                            arrow.set_opacity(opacity)
                         else:
-                            target_opacity = 0.0
-                            sticky_info['active'] = False
-                        
-                        arrow.set_opacity(target_opacity)
+                            arrow.set_opacity(0)
                     
                     arrow_index += 1
             
-            # Physics update
+            # Enhanced physics update
             new_heights = {}
             new_velocities = {}
             new_states = {}
+            new_interactions = {}
             
             for i in range(grid_width):
                 for j in range(grid_height):
@@ -1796,12 +1922,12 @@ class CSFAlgorithmAnimation(Scene):
                     current_height = cloth_heights[(i, j)]
                     current_velocity = cloth_velocities[(i, j)]
                     x = x_coords[i]
-                    y = y_coords[j]
+                    z = z_coords[j]
                     
                     # Apply gravity
                     current_velocity -= gravity * time_step
                     
-                    # Spring forces to neighbors
+                    # Spring forces
                     spring_force = 0.0
                     neighbor_count = 0
                     
@@ -1811,7 +1937,6 @@ class CSFAlgorithmAnimation(Scene):
                             neighbor_height = cloth_heights[(ni, nj)]
                             height_diff = neighbor_height - current_height
                             
-                            # Limit displacement
                             max_displacement = resolution * 0.4
                             if abs(height_diff) > max_displacement:
                                 height_diff = np.sign(height_diff) * max_displacement
@@ -1822,39 +1947,58 @@ class CSFAlgorithmAnimation(Scene):
                     if neighbor_count > 0:
                         current_velocity += (spring_force / neighbor_count) * time_step
                     
-                    # Ground-selective sticky forces
-                    sticky_force = 0.0
-                    if (i, j) in sticky_points:
-                        sticky_info = sticky_points[(i, j)]
-                        distance_to_ground = current_height - sticky_info['height']  # Distance to TRUE ground
-                        distance_to_vegetation = current_height - sticky_info.get('vegetation_height', sticky_info['height'])
+                    # Enhanced terrain interaction
+                    terrain_info = terrain_analysis.get((i, j), {'type': 'empty', 'stickiness': 0})
+                    interaction_info = {'type': None, 'points': [], 'forces': []}
+                    
+                    # Apply terrain-specific forces
+                    if terrain_info['stickiness'] > 0:
+                        distance_to_terrain = current_height - terrain_info['ground_level']
                         
-                        # Velocity-based breakthrough for vegetation
-                        velocity_factor = 1.0
-                        if abs(current_velocity) > 0.12:  # Fast-moving cloth punches through
-                            velocity_factor = 0.3
-                        
-                        # Apply sticky forces primarily near TRUE ground
-                        if 0.02 < distance_to_ground < 0.4:  # Very tight range for ground interaction
-                            proximity_factor = max(0, 1.0 - distance_to_ground / 0.4)
-                            ground_sticky_strength = sticky_info['strength'] * velocity_factor
+                        # Building-aware sticky forces
+                        if 0.02 < distance_to_terrain < 0.4:
+                            terrain_type = terrain_info['type']
                             
-                            if sticky_info['is_ground_area']:
-                                # Strong resistance near confirmed ground
-                                sticky_force = ground_sticky_strength * proximity_factor * 0.5
-                            else:
-                                # Weak resistance near mixed areas
-                                sticky_force = ground_sticky_strength * proximity_factor * 0.2
+                            # Velocity-based breakthrough
+                            velocity_factor = 1.0
+                            if abs(current_velocity) > 0.15:
+                                if 'edge' in terrain_type:
+                                    velocity_factor = 0.1  # Easy breakthrough on building edges
+                                elif 'building' in terrain_type:
+                                    velocity_factor = 0.3  # Moderate breakthrough on building tops
+                                else:
+                                    velocity_factor = 0.5  # Harder breakthrough on ground
                             
-                            if current_velocity < 0:  # Moving downward
-                                current_velocity += sticky_force  # Resist downward motion
-                        
-                        # Minimal resistance when passing through vegetation above ground
-                        elif 0.1 < distance_to_vegetation < 2.0 and distance_to_ground > 0.4:
-                            # Very weak vegetation resistance
-                            vegetation_resistance = sticky_info['strength'] * 0.05 * velocity_factor
-                            if current_velocity < 0:
-                                current_velocity += vegetation_resistance
+                            proximity_factor = max(0, 1.0 - distance_to_terrain / 0.4)
+                            sticky_force = terrain_info['stickiness'] * proximity_factor * velocity_factor
+                            
+                            if current_velocity < 0 and sticky_force > 0.05:
+                                current_velocity += sticky_force * 0.8
+                                
+                                # Record interaction
+                                if 'building' in terrain_type:
+                                    interaction_info['type'] = 'building_contact'
+                                    if terrain_info['nearby_buildings'] is not None and len(terrain_info['nearby_buildings']) > 0:
+                                        interaction_info['points'] = terrain_info['nearby_buildings'][:3]
+                                else:
+                                    interaction_info['type'] = 'ground_contact'
+                                    if terrain_info['nearby_ground'] is not None and len(terrain_info['nearby_ground']) > 0:
+                                        interaction_info['points'] = terrain_info['nearby_ground'][:3]
+                                
+                                interaction_info['forces'] = [sticky_force]
+                    
+                    # Check for vegetation passthrough
+                    if terrain_info.get('nearby_vegetation') is not None and len(terrain_info['nearby_vegetation']) > 0:
+                        veg_heights = terrain_info['nearby_vegetation'][:, 2]
+                        for veg_height in veg_heights:
+                            if abs(current_height - veg_height) < 0.3:  # Passing through vegetation
+                                # Minimal resistance for vegetation
+                                if current_velocity < 0:
+                                    current_velocity += 0.02  # Very small resistance
+                                
+                                if interaction_info['type'] is None:
+                                    interaction_info['type'] = 'vegetation_passthrough'
+                                    interaction_info['points'] = terrain_info['nearby_vegetation'][:2]
                     
                     # Apply damping
                     current_velocity *= damping
@@ -1862,85 +2006,175 @@ class CSFAlgorithmAnimation(Scene):
                     # Update position
                     new_height = current_height + current_velocity * time_step
                     
-                    # Enhanced ground collision with statistical ground detection
-                    search_radius = resolution * 1.2
-                    nearby_points = all_points[
-                        (np.abs(all_points[:, 0] - x) < search_radius) &
-                        (np.abs(all_points[:, 1] - y) < search_radius)  # Fixed Y coordinate
-                    ]
-                    
-                    if len(nearby_points) > 0:
-                        point_heights = nearby_points[:, 2]
-                        
-                        # Improved ground detection matching adaptive CSF
-                        if len(point_heights) >= 3:
-                            height_range = point_heights.max() - point_heights.min()
-                            if height_range > 0.5:  # Mixed vegetation and ground
-                                ground_level = np.percentile(point_heights, 25)  # Find ground level
-                            else:
-                                ground_level = point_heights.max()  # Relatively uniform = ground
-                        else:
-                            ground_level = point_heights.max()
-                        
-                        collision_buffer = 0.1
-                        min_cloth_height = ground_level + collision_buffer
+                    # Final collision detection (ground truth)
+                    collision_detected = False
+                    if terrain_info['ground_level'] is not None:
+                        collision_buffer = 0.08
+                        min_cloth_height = terrain_info['ground_level'] + collision_buffer
                         
                         if new_height < min_cloth_height:
                             new_height = min_cloth_height
+                            collision_detected = True
                             if current_velocity < 0:
-                                current_velocity = -current_velocity * 0.2
-                            current_velocity *= 0.6
+                                current_velocity = -current_velocity * 0.15
+                            current_velocity *= 0.7
                     
-                    # More aggressive state detection
-                    if abs(current_velocity) < 0.02:  # Stricter settling criteria
+                    # Enhanced state determination
+                    if abs(current_velocity) < 0.02:
                         state = 'settled'
-                    elif sticky_force > gravity * 0.8:  # Higher threshold for sticky interaction
-                        if abs(current_velocity) < 0.06:  # Lower threshold for stuck
+                    elif terrain_info['stickiness'] > 0.3 and 0 < current_height - terrain_info['ground_level'] < 0.5:
+                        if abs(current_velocity) < 0.06:
                             state = 'stuck'
                         else:
                             state = 'struggling'
+                    elif interaction_info['type'] == 'vegetation_passthrough':
+                        state = 'falling'  # Still falling through vegetation
                     else:
                         state = 'falling'
                     
                     new_heights[(i, j)] = new_height
                     new_velocities[(i, j)] = current_velocity
                     new_states[(i, j)] = state
+                    new_interactions[(i, j)] = interaction_info
             
             # Update cloth state
             cloth_heights = new_heights
             cloth_velocities = new_velocities
             cloth_states = new_states
+            cloth_interactions = new_interactions
             
-            # Count states for progress
+            # Count states and interactions
             state_counts = {'falling': 0, 'struggling': 0, 'stuck': 0, 'settled': 0}
+            interaction_counts = {'ground_contact': 0, 'building_contact': 0, 'vegetation_passthrough': 0, 'building_edge_override': 0}
+            
             for state in cloth_states.values():
                 state_counts[state] += 1
             
-            print(f"DEBUG: States - Falling: {state_counts['falling']}, Struggling: {state_counts['struggling']}, Stuck: {state_counts['stuck']}, Settled: {state_counts['settled']}")
+            for interaction in cloth_interactions.values():
+                if interaction['type'] in interaction_counts:
+                    interaction_counts[interaction['type']] += 1
+
+            # CLEANUP TRIGGER: Remove interaction effects when cloth has mostly settled
+            cleanup_triggered = False
+            if anim_iter > 25 and state_counts['settled'] > len(cloth_states) * 0.7:  # 70% settled after iteration 25
+                if not hasattr(self, 'cleanup_done'):
+                    cleanup_triggered = True
+                    self.cleanup_done = True  # Flag to prevent repeated cleanup
+            
+            print(f"BUILDING-AWARE DEBUG: States - F:{state_counts['falling']}, St:{state_counts['struggling']}, Stuck:{state_counts['stuck']}, Settled:{state_counts['settled']}")
+            print(f"BUILDING-AWARE DEBUG: Interactions - Ground:{interaction_counts['ground_contact']}, Building:{interaction_counts['building_contact']}, Vegetation:{interaction_counts['vegetation_passthrough']}")
             
             # Update visualization
-            new_cloth_dots, new_cloth_lines = visualize_sticky_cloth(cloth_heights, cloth_velocities, cloth_states)
-            
-            progress_new = Text(
-                f"Settled: {state_counts['settled']}, Struggling: {state_counts['struggling']}, Stuck: {state_counts['stuck']}", 
-                font_size=14, color=GREEN
-            )
-            progress_new.to_corner(UR)
-            
-            # Animate the changes
-            run_time = 0.4  # Slower for observation
-            self.play(
-                Transform(cloth_dots, new_cloth_dots),
-                Transform(cloth_lines, new_cloth_lines),
-                Transform(progress_text, progress_new),
-                run_time=run_time
-            )
+            if anim_iter % 1 == 0:
+                # Clear interactions if cleanup was triggered
+                if cleanup_triggered:
+                    new_cloth_dots, new_cloth_lines, new_interaction_markers, new_passthrough_effects = visualize_building_aware_cloth(
+                        cloth_heights, cloth_velocities, cloth_states, cloth_interactions, show_interactions=False  #turns of regeneration of effects.
+                    )
+                    
+                    # Also fade out sticky arrows
+                    for arrow in sticky_arrows:
+                        arrow.set_opacity(0)
+                        
+                    # Add cleanup explanation
+                    cleanup_explanation = Text("Interaction effects cleared - showing final cloth position", 
+                                            font_size=18, color=BLUE)
+                    cleanup_explanation.to_edge(DOWN)
+                    self.play(Transform(explanation, cleanup_explanation), run_time=0.5)
+                else:
+                    new_cloth_dots, new_cloth_lines, new_interaction_markers, new_passthrough_effects = visualize_building_aware_cloth(
+                        cloth_heights, cloth_velocities, cloth_states, cloth_interactions, show_interactions=True  # <-- Add this
+                    )
+                
+                total_interactions = sum(interaction_counts.values())
+                progress_new = Text(
+                    f"Settled: {state_counts['settled']}, Interactions: {total_interactions} (G:{interaction_counts['ground_contact']}, B:{interaction_counts['building_contact']}, V:{interaction_counts['vegetation_passthrough']})", 
+                    font_size=12, color=GREEN
+                )
+                progress_new.to_corner(UR)
+                
+                # Animate with all effects
+                animations = [
+                    Transform(cloth_dots, new_cloth_dots),
+                    Transform(cloth_lines, new_cloth_lines),
+                    Transform(progress_text, progress_new)
+                ]
+                
+                # Add interaction markers with tracking
+                if len(new_interaction_markers) > 0:
+                    if hasattr(self, 'current_interaction_markers'):
+                        animations.append(Transform(self.current_interaction_markers, new_interaction_markers))
+                        # Update tracked object
+                        self.object_manager.tracked_objects["interaction_markers"] = new_interaction_markers
+                    else:
+                        animations.append(FadeIn(new_interaction_markers))
+                        # Add to tracking
+                        self.object_manager.add_object("interaction_markers", new_interaction_markers, "physics_helpers")
+                    self.current_interaction_markers = new_interaction_markers
+
+                # Add passthrough effects with tracking
+                if len(new_passthrough_effects) > 0:
+                    if hasattr(self, 'current_passthrough_effects'):
+                        animations.append(Transform(self.current_passthrough_effects, new_passthrough_effects))
+                        # Update tracked object
+                        self.object_manager.tracked_objects["passthrough_effects"] = new_passthrough_effects
+                    else:
+                        animations.append(FadeIn(new_passthrough_effects))
+                        # Add to tracking
+                        self.object_manager.add_object("passthrough_effects", new_passthrough_effects, "physics_helpers")
+                    self.current_passthrough_effects = new_passthrough_effects
+                
+                run_time = 0.3
+                self.play(*animations, run_time=run_time)
         
-        # Fade out sticky arrows
-        self.play(FadeOut(sticky_arrows))
+        # Cleanup effects
+        # cleanup_effects = [sticky_arrows]
+        # if hasattr(self, 'current_interaction_markers'):
+        #     cleanup_effects.append(self.current_interaction_markers)
+        # if hasattr(self, 'current_passthrough_effects'):
+        #     cleanup_effects.append(self.current_passthrough_effects)
         
-        # Classification
-        explanation_classify = Text("Final classification based on settled cloth position", 
+        # self.play(FadeOut(*cleanup_effects))
+
+        # CLEANUP STEP: Clear interaction visualizations to see final cloth position clearly
+        explanation_cleanup = Text("Clearing interaction effects to show final cloth position", 
+                                font_size=20, color=BLUE)
+        explanation_cleanup.to_edge(DOWN)
+        self.play(Transform(explanation, explanation_cleanup))
+
+        # Force cleanup of all helper graphics
+        self.object_manager.cleanup_group("physics_helpers")
+
+        # Also manually clean up any remaining interaction effects
+        cleanup_effects = []
+        if hasattr(self, 'current_interaction_markers') and self.current_interaction_markers in self.mobjects:
+            cleanup_effects.append(self.current_interaction_markers)
+        if hasattr(self, 'current_passthrough_effects') and self.current_passthrough_effects in self.mobjects:
+            cleanup_effects.append(self.current_passthrough_effects)
+
+        if cleanup_effects:
+            self.play(FadeOut(*cleanup_effects))
+
+        # Show clean final cloth state - just the settled cloth grid
+        final_cloth_dots, final_cloth_lines, _, _ = visualize_building_aware_cloth(
+            cloth_heights, cloth_velocities, cloth_states, 
+            {key: {'type': None, 'points': [], 'forces': []} for key in cloth_interactions.keys()}  # Clear interactions
+        )
+
+        # Update to clean visualization
+        self.play(
+            Transform(cloth_dots, final_cloth_dots),
+            Transform(cloth_lines, final_cloth_lines)
+        )
+
+        explanation_clean = Text("Final cloth position - clear view of terrain conformance", 
+                            font_size=20, color=GREEN)
+        explanation_clean.to_edge(DOWN)
+        self.play(Transform(explanation, explanation_clean))
+        self.wait(3)
+        
+        # Final classification
+        explanation_classify = Text("Building-aware classification: buildings treated as elevated ground", 
                                 font_size=20, color=GREEN)
         explanation_classify.to_edge(DOWN)
         self.play(Transform(explanation, explanation_classify))
@@ -1948,12 +2182,21 @@ class CSFAlgorithmAnimation(Scene):
         ground_classified = []
         non_ground_classified = []
         
+        # Enhanced classification: points within 5mm OR below cloth = ground
+        fine_threshold = 0.005  # 5mm tolerance
+        print(f"DEBUG: Using fine threshold of {fine_threshold:.3f}m for classification")
+
+        # Debug counters
+        within_tolerance_count = 0
+        below_cloth_count = 0
+        above_cloth_count = 0
+        outside_grid_count = 0
+
         for point in all_points:
             x, y, z = point
             
-            # FIXED grid lookup
             grid_i = int(round((x - x_coords[0]) / resolution))
-            grid_j = int(round((y - y_coords[0]) / resolution))  # Use Y coordinate
+            grid_j = int(round((y - z_coords[0]) / resolution))
             
             grid_i = max(0, min(grid_width - 1, grid_i))
             grid_j = max(0, min(grid_height - 1, grid_j))
@@ -1962,70 +2205,117 @@ class CSFAlgorithmAnimation(Scene):
                 cloth_height = cloth_heights[(grid_i, grid_j)]
                 distance_to_cloth = z - cloth_height
                 
-                if distance_to_cloth <= threshold:
+                # Debug: Print first few points
+                if len(ground_classified) + len(non_ground_classified) < 5:
+                    print(f"DEBUG Point: terrain_z={z:.3f}, cloth_z={cloth_height:.3f}, distance={distance_to_cloth:.3f}")
+                
+                # NEW LOGIC: Ground if within 5mm OR below cloth
+                is_within_tolerance = abs(distance_to_cloth) <= fine_threshold
+                is_below_cloth = z < cloth_height  # Changed from <= to < for stricter below test
+                
+                if is_within_tolerance:
+                    within_tolerance_count += 1
+                    ground_classified.append(point)
+                elif is_below_cloth:
+                    below_cloth_count += 1
                     ground_classified.append(point)
                 else:
+                    above_cloth_count += 1
                     non_ground_classified.append(point)
             else:
+                outside_grid_count += 1
                 non_ground_classified.append(point)
+
+        print(f"DEBUG Classification breakdown:")
+        print(f"  Within tolerance ({fine_threshold*1000:.0f}mm): {within_tolerance_count}")
+        print(f"  Below cloth: {below_cloth_count}")
+        print(f"  Above cloth: {above_cloth_count}")
+        print(f"  Outside grid: {outside_grid_count}")
+        print(f"  Total ground: {len(ground_classified)}")
+        print(f"  Total non-ground: {len(non_ground_classified)}")
         
-        print(f"DEBUG: Classification - Ground: {len(ground_classified)}, Non-ground: {len(non_ground_classified)}")
+        print(f"BUILDING-AWARE DEBUG: Final classification - Ground: {len(ground_classified)}, Non-ground: {len(non_ground_classified)}")
         
         # Show results
-        self.play(FadeOut(point_dots))
+        self.play(FadeOut(ground_dots, vegetation_dots, building_dots))
         
         if ground_classified:
-            ground_dots = VGroup(*[
-                Dot(self.axes.coords_to_point(x, z), color=BROWN, radius=0.03)
+            final_ground_dots = VGroup(*[
+                Dot(self.axes.coords_to_point(x, z), color=BROWN, radius=0.025)
                 for x, y, z in ground_classified
             ])
-            self.play(FadeIn(ground_dots, lag_ratio=0.02))
+            self.play(FadeIn(final_ground_dots, lag_ratio=0.01))
         
         if non_ground_classified:
-            non_ground_dots = VGroup(*[
-                Dot(self.axes.coords_to_point(x, z), color=RED, radius=0.03)
+            final_non_ground_dots = VGroup(*[
+                Dot(self.axes.coords_to_point(x, z), color=RED, radius=0.025)
                 for x, y, z in non_ground_classified
             ])
-            self.play(FadeIn(non_ground_dots, lag_ratio=0.02))
+            self.play(FadeIn(final_non_ground_dots, lag_ratio=0.01))
         
-        # Results display
+        # Enhanced results
+        final_interaction_counts = {'ground_contact': 0, 'building_contact': 0, 'vegetation_passthrough': 0}
+        for interaction in cloth_interactions.values():
+            if interaction['type'] in final_interaction_counts:
+                final_interaction_counts[interaction['type']] += 1
+        
         results_display = VGroup(
-            Text("Sticky Points CSF Results:", font_size=16, color=YELLOW),
-            Text(f"Ground: {len(ground_classified)}", font_size=14, color=BROWN),
+            Text("Building-Aware CSF Results:", font_size=16, color=YELLOW),
+            Text(f"Ground classified: {len(ground_classified)}", font_size=14, color=BROWN),
             Text(f"Non-ground: {len(non_ground_classified)}", font_size=14, color=RED),
-            Text("Terrain resistance overcome!", font_size=14, color=GREEN)
+            Text(f"Ground contacts: {final_interaction_counts['ground_contact']}", font_size=12, color=BROWN),
+            Text(f"Building contacts: {final_interaction_counts['building_contact']}", font_size=12, color=GRAY),
+            Text(f"Vegetation passthrough: {final_interaction_counts['vegetation_passthrough']}", font_size=12, color=GREEN),
+            Text(f"Resolution: {resolution}m", font_size=12, color=WHITE)
         )
         results_display.arrange(DOWN, aligned_edge=LEFT)
-        results_display.to_corner(UR, buff=0.5).shift(DOWN * 3.5)
+        results_display.to_corner(UR, buff=0.5).shift(DOWN * 3)
         self.play(FadeIn(results_display))
         
         # Final explanation
-        final_explanation = Text("Sticky points visualization complete - forces visualized!", 
+        final_explanation = Text("Building-aware CSF complete - buildings as semi-ground, vegetation passthrough!", 
                             font_size=24, color=GREEN)
         final_explanation.to_edge(DOWN)
         
         self.play(Transform(explanation, final_explanation))
-        self.wait(3)
+        self.wait(4)
         
         # Store results
         final_positions = []
         for (i, j), height in cloth_heights.items():
             x = x_coords[i]
-            y = y_coords[j]
+            z = z_coords[j]
             final_positions.append([x, 0, height])
         
         self.cloth_points = np.array(final_positions)
         self.cloth_dots = cloth_dots
         self.cloth_lines = cloth_lines
+        # Store classification results for next scene
+        self.physics_ground_classified = ground_classified
+        self.physics_non_ground_classified = non_ground_classified
         
-        # Cleanup
-        cleanup_objects = [title, explanation, legend, progress_text, results_display, cloth_dots, cloth_lines]
-        if 'ground_dots' in locals():
-            cleanup_objects.append(ground_dots)
-        if 'non_ground_dots' in locals():
-            cleanup_objects.append(non_ground_dots)
-        
-        self.play(FadeOut(*cleanup_objects))
+        # Final cleanup - ensure everything is gone
+        self.object_manager.cleanup_group("physics_helpers")
+
+        # Cleanup main objects from this scene
+        cleanup_objects = [title, explanation, legend, progress_text, 
+                        results_display, ground_dots, vegetation_dots, building_dots,
+                        cloth_dots, cloth_lines]
+
+        if 'final_ground_dots' in locals():
+            cleanup_objects.append(final_ground_dots)
+        if 'final_non_ground_dots' in locals():
+            cleanup_objects.append(final_non_ground_dots)
+
+        # Remove any remaining interaction effects manually
+        remaining_cleanup = []
+        if hasattr(self, 'current_interaction_markers') and self.current_interaction_markers in self.mobjects:
+            remaining_cleanup.append(self.current_interaction_markers)
+        if hasattr(self, 'current_passthrough_effects') and self.current_passthrough_effects in self.mobjects:
+            remaining_cleanup.append(self.current_passthrough_effects)
+
+        all_cleanup = cleanup_objects + remaining_cleanup
+        self.play(FadeOut(*all_cleanup))
         self.wait(0.5)
 
     def create_cloth_visualization_from_state(self, cloth_state):
@@ -2250,34 +2540,70 @@ class CSFAlgorithmAnimation(Scene):
 
     def ground_classification(self):
         """Show ground point classification"""
+        
+        # COMPLETE SCENE RESET - Remove everything from physics simulation
+        print("DEBUG: Clearing all mobjects before classification")
+        print(f"DEBUG: Currently have {len(self.mobjects)} mobjects")
+        
+        # Force remove ALL current mobjects
+        if self.mobjects:
+            all_current_objects = list(self.mobjects)
+            self.play(FadeOut(*all_current_objects), run_time=0.5)
+        
+        # Also force cleanup object manager
+        self.object_manager.cleanup_all()
+        
+        # Clear any remaining mobjects that might have slipped through
+        self.mobjects.clear()
+        
+        print(f"DEBUG: After cleanup have {len(self.mobjects)} mobjects")
+        
         title = Text("Step 3: Ground Classification", font_size=48, color=BLUE)
         title.to_edge(UP)
         
         self.play(Write(title))
+
+        # Recreate clean axes for classification (no old cloth/effects)
+        clean_axes = Axes(
+            x_range=[-5, 5, 1],
+            y_range=[-3, 4, 1],
+            x_length=8,
+            y_length=6,
+            tips=False
+        )
+        self.play(Create(clean_axes))
+        self.axes = clean_axes  # Update the reference
         
         # Calculate distances from points to cloth
         all_points = np.vstack([self.ground_points, self.vegetation_points, self.building_points])
-        threshold = 0.3
-        
-        ground_classified = []
-        non_ground_classified = []
-        
-        for point in all_points:
-            x, y, z = point
+        threshold = 0.005
+
+        # Use results from physics simulation
+        if hasattr(self, 'physics_ground_classified'):
+            ground_classified = self.physics_ground_classified
+            non_ground_classified = self.physics_non_ground_classified
+            print(f"Using physics simulation results: {len(ground_classified)} ground, {len(non_ground_classified)} non-ground")
+        else:
             
-            # Find nearest cloth point (simplified)
-            distances = np.sqrt(
-                (self.cloth_points[:, 0] - x)**2 + 
-                (self.cloth_points[:, 2] - z)**2
-            )
-            nearest_cloth_z = self.cloth_points[np.argmin(distances), 2]
+            ground_classified = []
+            non_ground_classified = []
             
-            distance_to_cloth = abs(z - nearest_cloth_z)
-            
-            if distance_to_cloth < threshold:
-                ground_classified.append(point)
-            else:
-                non_ground_classified.append(point)
+            for point in all_points:
+                x, y, z = point
+                
+                # Find nearest cloth point (simplified)
+                distances = np.sqrt(
+                    (self.cloth_points[:, 0] - x)**2 + 
+                    (self.cloth_points[:, 2] - z)**2
+                )
+                nearest_cloth_z = self.cloth_points[np.argmin(distances), 2]
+                
+                distance_to_cloth = abs(z - nearest_cloth_z)
+                
+                if distance_to_cloth < threshold:
+                    ground_classified.append(point)
+                else:
+                    non_ground_classified.append(point)
         
         # Create classification visualization
         ground_classified_dots = VGroup(*[
@@ -2296,7 +2622,7 @@ class CSFAlgorithmAnimation(Scene):
         
         self.play(Write(explanation))
         self.play(FadeIn(ground_classified_dots, lag_ratio=0.1))
-        self.wait(1)
+        self.wait(5)
         
         explanation2 = Text("Points above threshold = Non-Ground (Red)", 
                           font_size=24, color=YELLOW)
@@ -2305,7 +2631,7 @@ class CSFAlgorithmAnimation(Scene):
         self.play(Transform(explanation, explanation2))
         self.play(FadeIn(non_ground_classified_dots, lag_ratio=0.1))
         
-        self.wait(2)
+        self.wait(5)
         
         # PROPER CLEANUP - Remove ALL elements from this scene
         self.play(FadeOut(

@@ -32,10 +32,10 @@ class CSFPipelineManager:
             default_params: Default CSF parameters
         """
         self.default_params = default_params or {
-            "resolution": 0.5,
+            "resolution": 1.0,
             "threshold": 0.25,
-            "rigidness": 2,
-            "iterations": 500,
+            "rigidness": 1,
+            "iterations": 200,
             "time_step": 0.65
         }
         
