@@ -123,8 +123,8 @@ class CSFPresentation(ThreeDScene):
         
         # Add axis labels positioned for standard Z-vertical orientation
         x_label = Text("X", font_size=20, color=WHITE).next_to(axes_3d.x_axis, RIGHT)
-        y_label = Text("Y", font_size=20, color=WHITE).next_to(axes_3d.y_axis, DOWN + RIGHT)
-        z_label = Text("Z", font_size=20, color=WHITE).next_to(axes_3d.z_axis, UP)
+        y_label = Text("Z", font_size=20, color=WHITE).next_to(axes_3d.y_axis, DOWN + RIGHT)
+        z_label = Text("Y", font_size=20, color=WHITE).next_to(axes_3d.z_axis, UP)
         
         self.play(Create(axes_3d))
         self.play(Write(x_label), Write(y_label), Write(z_label))
@@ -898,23 +898,37 @@ class CSFPresentation(ThreeDScene):
                         font_size=20, color=YELLOW)
         explanation.to_edge(DOWN)
         self.play(Write(explanation))
+
+        # Define slider positions and corresponding thresholds
+        config_settings = [
+            {"positions": [0.1, 0.2, 0.3, 0.4], "threshold": 0.05},  # Conservative
+            {"positions": [0.3, 0.5, 0.6, 0.7], "threshold": 0.12},  # Moderate
+            {"positions": [0.6, 0.8, 0.4, 0.2], "threshold": 0.18},   # Standard  
+            {"positions": [0.8, 0.3, 0.7, 0.9], "threshold": 0.25},   # Aggressive
+            {"positions": [0.4, 0.6, 0.2, 0.5], "threshold": 0.35}   # Mixed
+        ]
         
-        # Cycle through configs 1,2,3,4 (skip 0 since we started with it)
-        for config_idx in range(1, 5):  # Changed: start from 1, not 0
+        for config_idx in range(1, 5):
+            # Move sliders based on positions
             slider_animations = []
-            for slider in slider_group:
+            for slider_idx, slider in enumerate(slider_group):
                 handle = slider[2]
                 track = slider[1]
-                slider_positions = [0.2, 0.4, 0.6, 0.8, 0.3]
-                random_x = track.get_left()[0] + slider_positions[config_idx] * track.width
-                target_pos = [random_x, handle.get_center()[1], 0]
+                position_ratio = config_settings[config_idx-1]["positions"][slider_idx]
+                new_x = track.get_left()[0] + position_ratio * track.width
+                target_pos = [new_x, handle.get_center()[1], 0]
                 slider_animations.append(handle.animate.move_to(target_pos))
             
-            new_result_points = self.create_result_display(config_idx)
+            # Compute classification based on the threshold for this config
+            threshold = config_settings[config_idx-1]["threshold"]
+            ground_indices = self.compute_classification_for_threshold(threshold)
             
-            # Debug: Print the ground counts for each config
-            ground_count = len(self.classification_results[config_idx])
-            print(f"Config {config_idx}: {ground_count} ground points")
+            # Create display with the computed results
+            new_result_points = self.create_result_display_from_indices(
+                ground_indices, 
+                config_settings[config_idx-1], 
+                config_idx
+            )
             
             self.play(
                 *slider_animations,
@@ -922,21 +936,69 @@ class CSFPresentation(ThreeDScene):
                 run_time=2
             )
             self.wait(1)
-        
         self.wait(2)
         self.play(FadeOut(*self.mobjects))
+
+    def compute_classification_for_threshold(self, threshold):
+        """Compute ground classification for a specific threshold"""
+        ground_indices = []
+        for idx, point in enumerate(self.all_points):
+            x, y, z = point
+            ground_height = 0.3 * np.sin(x * 0.8)
+            distance_to_ground = abs(z - ground_height)
+            if distance_to_ground <= threshold:
+                ground_indices.append(idx)
+        return ground_indices
+
+    def create_result_display_from_indices(self, ground_indices, config_settings, config_idx):
+        """Create display from computed indices"""
+        result_points = VGroup()
+        
+        config_label = Text(f"Threshold: {config_settings['threshold']}", font_size=16, color=YELLOW)
+        config_label.move_to([4, 3, 0])
+        result_points.add(config_label)
+        
+        stats_text = Text(
+            f"Ground: {len(ground_indices)} pts\n"
+            f"Non-ground: {len(self.all_points) - len(ground_indices)} pts",
+            font_size=14, color=WHITE
+        )
+        stats_text.move_to([4, 2.3, 0])
+        result_points.add(stats_text)
+        
+        # Create point visualization
+        subset_size = 60
+        for i in range(min(subset_size, len(self.all_points))):
+            point = self.all_points[i]
+            x, y, z = point
+            
+            vis_x = 2 + x * 0.3
+            vis_y = z * 0.4
+            
+            if i in ground_indices:
+                color = GROUND_COLOR
+                radius = 0.025
+            else:
+                color = WHITE
+                radius = 0.02
+            
+            dot = Dot([vis_x, vis_y, 0], color=color, radius=radius)
+            result_points.add(dot)
+        
+        return result_points
 
     def precompute_parameter_results(self):
         """Pre-compute classification results for different parameter sets"""
         self.all_points = np.vstack([self.ground_points, self.vegetation_points, self.building_points])
         
-        # Use more extreme threshold differences to make changes more visible
+        # Use thresholds appropriate for your data range
+        # Your data has Z roughly from -1 to 4, so use smaller, more realistic thresholds
         self.parameter_configs = [
-            {"threshold": 0.1, "resolution": 0.5, "name": "Very Conservative"},  # Very few ground points
-            {"threshold": 0.4, "resolution": 0.4, "name": "Conservative"},      # Some ground points  
-            {"threshold": 0.7, "resolution": 0.3, "name": "Standard"},          # More ground points
-            {"threshold": 1.0, "resolution": 0.3, "name": "Aggressive"},        # Many ground points
-            {"threshold": 1.5, "resolution": 0.5, "name": "Very Aggressive"}    # Most ground points
+            {"threshold": 0.15, "resolution": 0.5, "name": "Very Conservative"},  # Very few ground points
+            {"threshold": 0.3, "resolution": 0.4, "name": "Conservative"},       # Some ground points  
+            {"threshold": 0.5, "resolution": 0.3, "name": "Standard"},           # Moderate ground points
+            {"threshold": 0.7, "resolution": 0.3, "name": "Aggressive"},         # More ground points
+            {"threshold": 0.9, "resolution": 0.5, "name": "Very Aggressive"}     # Most ground points
         ]
         
         self.classification_results = []
@@ -947,14 +1009,14 @@ class CSFPresentation(ThreeDScene):
             
             for idx, point in enumerate(self.all_points):
                 x, y, z = point
-                ground_height = 0.3 * np.sin(x * 0.8)
+                ground_height = 0.3 * np.sin(x * 0.8)  # This gives values roughly -0.3 to +0.3
                 distance_to_ground = abs(z - ground_height)
                 
                 if distance_to_ground <= threshold:
                     ground_indices.append(idx)
             
             self.classification_results.append(ground_indices)
-            print(f"Config {config['name']}: {len(ground_indices)} ground points")  # Debug
+            print(f"Config {config['name']}: {len(ground_indices)} ground points out of {len(self.all_points)}")
 
     def create_result_display(self, config_idx):
         """Create point cloud visualization for a specific parameter configuration"""
@@ -1043,4 +1105,4 @@ class CSFPresentation(ThreeDScene):
 
 
 # To run this presentation:
-# manim -pql csf_fixed.py CSFPresentation
+# manim -pql csf_manim_animationv**.py CSFPresentation
